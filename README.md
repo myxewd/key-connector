@@ -31,7 +31,8 @@ only ever read or write its own key. `POST` accepts only the base64 encoding of 
 Everything is set via environment variables, see [`.env.example`](.env.example):
 
 - `KC_BIND_ADDR` (default `0.0.0.0:8081`)
-- `KC_DATABASE_URL` (default `sqlite://keyconnector.db?mode=rwc`)
+- `KC_DATABASE_URL` (default `sqlite://keyconnector.db?mode=rwc`) — SQLite or
+  MySQL, e.g. `mysql://keyconnector:password@db:3306/keyconnector`
 - `KC_IDENTITY_AUTHORITY`, e.g. `https://vault.example.com/identity` — issuer and
   signing key are fetched from its OIDC discovery document and refreshed
   periodically, nothing else to configure
@@ -86,6 +87,36 @@ KC_ENCRYPTION_KEY="$(openssl rand -base64 32)" \
 ```
 
 Or with Docker: `docker build -t key-connector .`
+
+## Docker Compose (production)
+
+`docker-compose.yml` runs only the connector and points at your existing MySQL;
+the encryption key is supplied as a Docker secret:
+
+```sh
+mkdir -p secrets
+openssl rand -base64 32 > secrets/kc_encryption_key.txt
+cp .env.compose.example .env      # edit it, then: chmod 600 .env
+docker compose up -d
+```
+
+The database must already exist. On first start the connector creates its table,
+so its MySQL user needs `CREATE, SELECT, INSERT, UPDATE` on that database. If you
+prefer to create the table yourself and grant only `SELECT, INSERT, UPDATE`, use:
+
+```sql
+CREATE TABLE user_keys (
+    user_id VARCHAR(255) NOT NULL PRIMARY KEY,
+    `key`   VARCHAR(1024) NOT NULL
+);
+```
+
+No MySQL `root` account is involved anywhere.
+
+The connector is published on `127.0.0.1:8081` only; terminate TLS in the reverse
+proxy in front of it. With `KC_API_PREFIX=/kc` the proxy must forward `/kc/...`
+unchanged (do not strip the prefix) and the Bitwarden `keyConnectorUrl` /
+`KEY_CONNECTOR_URL` becomes `https://keyconnector.example.com/kc`.
 
 ## Deployment notes
 

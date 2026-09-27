@@ -1,0 +1,75 @@
+# Production deployment for key-connector against an EXISTING MySQL instance.
+#
+#   mkdir -p secrets
+#   openssl rand -base64 32 > secrets/kc_encryption_key.txt
+#   cp .env.compose.example .env    # edit it, then: chmod 600 .env
+#   docker compose up -d
+#
+# There is no database service here: you already run MySQL. The connector's
+# database user needs CREATE, SELECT, INSERT and UPDATE on the database (CREATE
+# only if you want it to create the table itself). TLS is terminated by the
+# reverse proxy in front of this stack; the connector itself only speaks HTTP.
+name: key-connector
+
+services:
+  key-connector:
+    image: key-connector:1.0
+    restart: unless-stopped
+    ports:
+      # host:container, loopback only. Point your reverse proxy at it.
+      - "127.0.0.1:8081:8081"
+    environment:
+      KC_BIND_ADDR: 0.0.0.0:8081
+      # Full sqlx URL to your MySQL, including credentials and TLS options.
+      KC_DATABASE_URL: "${KC_DATABASE_URL}"
+      # Never put the encryption key in the environment; mount it as a secret.
+      KC_ENCRYPTION_KEY_PATH: /run/secrets/kc_encryption_key
+      # Identity provider: use the OIDC discovery URL...
+      KC_IDENTITY_AUTHORITY: "${KC_IDENTITY_AUTHORITY}"
+      # ...or a static public key (also mount it as a secret, see below):
+      # KC_IDENTITY_PUBLIC_KEY_PATH: /run/secrets/identity_public_key
+      # KC_JWT_ISSUER: "${KC_JWT_ISSUER}"
+      # Browser origin allowed to call the connector. Empty rejects every origin.
+      KC_CORS_ALLOWED_ORIGINS: "${KC_CORS_ALLOWED_ORIGINS}"
+      # Optional subpath, e.g. /kc -> /kc/alive and /kc/user-keys.
+      KC_API_PREFIX: "${KC_API_PREFIX:-}"
+      RUST_LOG: "${RUST_LOG:-key_connector=info,tower_http=warn}"
+    secrets:
+      - kc_encryption_key
+      # - identity_public_key
+    extra_hosts:
+      # Lets the container reach a MySQL that runs on the Docker host itself.
+      # Delete this block if your MySQL has a normal DNS name or IP.
+      - "host.docker.internal:host-gateway"
+    healthcheck:
+      # The runtime image has no curl or wget, but it does have bash, which can
+      # open a raw TCP socket.
+      test: ["CMD-SHELL", "bash -c 'echo > /dev/tcp/127.0.0.1/8081'"]
+      interval: 15s
+      timeout: 3s
+      retries: 5
+      start_period: 10s
+    # The connector never writes to its own filesystem (the database is MySQL).
+    read_only: true
+    tmpfs:
+      - /tmp
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+    deploy:
+      resources:
+        limits:
+          cpus: "1.0"
+          memory: 256M
+
+secrets:
+  kc_encryption_key:
+    file: ./secrets/kc_encryption_key.txt
+  # identity_public_key:
+  #   file: ./secrets/identity.pub.pem

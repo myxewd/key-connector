@@ -2,7 +2,9 @@
 # cargo-chef splits the build so dependencies compile in their own layer,
 # keyed on the recipe below rather than on the source tree. Installed from
 # crates.io instead of pulling a third-party builder image.
-FROM rust:1-slim AS chef
+# Pinned to bookworm so the builder's glibc matches the runtime stage below
+# (the floating rust:1-slim tag now tracks Debian trixie / glibc 2.41).
+FROM rust:1-slim-bookworm AS chef
 RUN cargo install cargo-chef --locked
 WORKDIR /src
 

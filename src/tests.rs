@@ -519,6 +519,25 @@ fn wrong_key_and_tampering_are_rejected() {
 }
 
 #[test]
+fn database_dialect_is_chosen_from_the_url() {
+    use crate::store::Dialect;
+    assert_eq!(
+        Dialect::from_url("mysql://user:pass@db:3306/keyconnector"),
+        Dialect::MySql
+    );
+    assert_eq!(
+        Dialect::from_url("sqlite://keyconnector.db?mode=rwc"),
+        Dialect::Sqlite
+    );
+    assert_eq!(Dialect::from_url("sqlite::memory:"), Dialect::Sqlite);
+    // The upsert syntax genuinely differs between the two backends.
+    assert_ne!(
+        Dialect::from_url("mysql://db/kc").upsert(),
+        Dialect::from_url("sqlite://kc.db").upsert()
+    );
+}
+
+#[test]
 fn jwk_matches_the_pem_fixture() {
     // n/e of tests/fixtures/test_pub.pem, as Vaultwarden would publish them
     // in its JWKS.
@@ -546,7 +565,11 @@ async fn plaintext_rows_are_sealed_on_startup() {
     // Simulates a database written before encryption at rest existed.
     let db_path = std::env::temp_dir().join(format!("kc-migration-test-{}.db", std::process::id()));
     let _ = std::fs::remove_file(&db_path);
-    let url = format!("sqlite://{}?mode=rwc", db_path.display());
+    // sqlx's Any URL parser needs forward slashes, including on Windows.
+    let url = format!(
+        "sqlite:///{}?mode=rwc",
+        db_path.display().to_string().replace('\\', "/")
+    );
 
     let pool = sqlx::sqlite::SqlitePoolOptions::new()
         .connect(&url)
