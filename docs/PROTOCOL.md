@@ -36,6 +36,8 @@ caller with a valid access token for that same identity.
 ## HTTP API
 
 Base URL is the configured `keyConnectorUrl` of the org, paths are appended directly.
+When the connector is mounted under a path prefix (`KC_API_PREFIX`), that prefix is
+part of the base URL and every path below is relative to it.
 
 ### `GET /alive`
 
@@ -51,6 +53,7 @@ checks.
   { "key": "<base64 of the user's 32 byte master key>" }
   ```
   The client reads the `key` property case-insensitively, camelCase is fine.
+  The response carries `Cache-Control: no-store`.
 - Any non-200 is treated as a key connector error by the client, which then logs the
   user out.
 
@@ -62,6 +65,8 @@ checks.
   { "key": "<base64 of the user's 32 byte master key>" }
   ```
 - Stores or overwrites the key for the authenticated user, `200 OK` on success.
+  The connector accepts only base64 that decodes to exactly 32 bytes and rejects
+  anything else with `400`; the request body is capped at 8 KiB.
 
 That is the entire connector surface the clients need: `GET /alive`, `GET /user-keys`,
 `POST /user-keys`.
@@ -77,6 +82,9 @@ The bearer token is the standard access token issued by the identity provider
 2. Verify the issuer, which is `"<domain_origin>|login"` (`JWT_LOGIN_ISSUER`).
 3. Verify `exp` and `nbf` (Vaultwarden uses 30s leeway).
 4. Take the user from the `sub` claim (the user's GUID). This is the storage key.
+5. Require `scope` to contain `api` (Vaultwarden sends `["api","offline_access"]`)
+   and a non-empty `sub` of at most 255 bytes. No revocation or introspection is
+   performed; the token is trusted until it expires.
 
 A token only ever grants access to its own `sub`'s key, there is no cross-user access,
 so no extra ACL is needed at the connector. Which users belong to a key connector org

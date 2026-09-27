@@ -4,6 +4,7 @@ mod error;
 mod jwt;
 mod routes;
 mod store;
+mod util;
 
 #[cfg(test)]
 mod tests;
@@ -36,12 +37,24 @@ async fn run() -> Result<(), String> {
 
     let verifier = TokenVerifier::from_config(&cfg).await?;
     let cipher = KeyCipher::new(&cfg.encryption_key)?;
+    let database_url = util::redact_database_url(&cfg.database_url);
     let store = KeyStore::connect(&cfg.database_url, cipher)
         .await
-        .map_err(|e| format!("failed to open database '{}': {e}", cfg.database_url))?;
+        .map_err(|e| format!("failed to open database '{database_url}': {e}"))?;
 
-    let app = routes::router(AppState { verifier, store }, &cfg.cors_allowed_origins)
-        .layer(TraceLayer::new_for_http());
+    if cfg.cors_allowed_origins.is_empty() {
+        tracing::warn!(
+            "KC_CORS_ALLOWED_ORIGINS is empty; browser requests from every origin will be rejected. \
+             Set it to the web vault origin, e.g. https://vault.example.com"
+        );
+    }
+
+    let app = routes::router(
+        AppState { verifier, store },
+        &cfg.cors_allowed_origins,
+        &cfg.api_prefix,
+    )
+    .layer(TraceLayer::new_for_http());
 
     let listener = tokio::net::TcpListener::bind(&cfg.bind_addr)
         .await

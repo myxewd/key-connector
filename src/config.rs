@@ -20,10 +20,13 @@ pub struct Config {
     pub public_key: PublicKeySource,
     /// 32 byte key used to seal the stored key blobs at rest.
     pub encryption_key: Vec<u8>,
-    /// Origins allowed to call the connector from a browser. Empty means any
-    /// origin is mirrored back, which is fine because auth is a bearer token,
-    /// not a cookie.
+    /// Origins allowed to call the connector from a browser. Empty means no
+    /// browser origin is accepted; the web vault origin must be listed
+    /// explicitly.
     pub cors_allowed_origins: Vec<String>,
+    /// Path prefix the API is mounted under, e.g. "/kc" when the connector is
+    /// deployed on a subpath of a reverse proxy. Normalized to "" or "/sub".
+    pub api_prefix: String,
 }
 
 #[derive(Debug, Clone)]
@@ -90,6 +93,14 @@ impl Config {
             .map(String::from)
             .collect();
 
+        // KC_API_PREFIX is the documented name; API_PREFIX is accepted as an
+        // alias for deployments that keep configuration unprefixed.
+        let api_prefix = env::var("KC_API_PREFIX")
+            .ok()
+            .or_else(|| env::var("API_PREFIX").ok())
+            .map(|raw| crate::util::normalize_api_prefix(&raw))
+            .unwrap_or_default();
+
         Ok(Self {
             bind_addr,
             database_url,
@@ -97,6 +108,7 @@ impl Config {
             public_key,
             encryption_key,
             cors_allowed_origins,
+            api_prefix,
         })
     }
 }

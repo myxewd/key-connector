@@ -6,12 +6,40 @@ use serde::Deserialize;
 
 use crate::config::{Config, PublicKeySource};
 use crate::error::ApiError;
+use crate::util;
+
+/// Access tokens must carry the API scope; a token that was issued for some
+/// other purpose must not unlock a user's master key.
+const REQUIRED_SCOPE: &str = "api";
+/// Vaultwarden subjects are UUIDs. Cap the length so a validly signed but
+/// unexpected subject cannot be used as an arbitrarily large storage key.
+const MAX_SUB_LEN: usize = 255;
 
 // The claims we actually care about, serde ignores the rest
 #[derive(Debug, Deserialize)]
 pub struct AccessClaims {
     // the user's GUID, used as the storage key
     pub sub: String,
+    // Vaultwarden serializes scope as a JSON array, but OAuth2 also allows a
+    // single space delimited string, so accept both.
+    #[serde(default)]
+    pub scope: Option<Scope>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(untagged)]
+pub enum Scope {
+    List(Vec<String>),
+    SpaceSeparated(String),
+}
+
+impl Scope {
+    fn contains(&self, wanted: &str) -> bool {
+        match self {
+            Scope::List(values) => values.iter().any(|value| value == wanted),
+            Scope::SpaceSeparated(value) => value.split_whitespace().any(|part| part == wanted),
+        }
+    }
 }
 
 #[derive(Deserialize)]
@@ -54,7 +82,7 @@ impl TokenVerifier {
                 (key_from_pem(&pem)?, None)
             }
             PublicKeySource::Authority(authority) => {
-                let client = reqwest::Client::new();
+                let client = http_client()?;
                 let discovery = wait_for_discovery(&client, authority).await?;
                 let key = fetch_jwks(&client, &discovery.jwks_uri).await?;
                 tracing::info!(issuer = %discovery.issuer, jwks_uri = %discovery.jwks_uri, "discovered identity provider");
@@ -89,7 +117,7 @@ impl TokenVerifier {
                 loop {
                     tokio::time::sleep(JWKS_REFRESH_INTERVAL).await;
                     match fetch_jwks(&client, &jwks_uri).await {
-                        Ok(new_key) => *key.write().unwrap() = new_key,
+                        Ok(new_key) => *util::recover_lock(key.write()) = new_key,
                         Err(e) => tracing::warn!(error = %e, "jwks refresh failed, keeping the current key"),
                     }
                 }
@@ -102,10 +130,34 @@ impl TokenVerifier {
     pub fn verify(&self, token: &str) -> Result<AccessClaims, ApiError> {
         // Vaultwarden strips whitespace before decoding, do the same
         let token: String = token.chars().filter(|c| !c.is_whitespace()).collect();
-        let key = self.key.read().unwrap();
-        decode::<AccessClaims>(&token, &key, &self.validation)
-            .map(|data| data.claims)
-            .map_err(|e| ApiError::InvalidToken(e.to_string()))
+        let claims = {
+            let key = util::recover_lock(self.key.read());
+            decode::<AccessClaims>(&token, &key, &self.validation)
+                .map(|data| data.claims)
+                .map_err(|e| ApiError::InvalidToken(e.to_string()))?
+        };
+
+        if claims.sub.is_empty() || claims.sub.len() > MAX_SUB_LEN {
+            return Err(ApiError::InvalidToken(format!(
+                "subject must be 1..={MAX_SUB_LEN} bytes, got {}",
+                claims.sub.len()
+            )));
+        }
+        match &claims.scope {
+            Some(scope) if scope.contains(REQUIRED_SCOPE) => {}
+            Some(_) => {
+                return Err(ApiError::InvalidToken(format!(
+                    "token is missing the '{REQUIRED_SCOPE}' scope"
+                )))
+            }
+            None => {
+                return Err(ApiError::InvalidToken(
+                    "token has no scope claim".to_string(),
+                ))
+            }
+        }
+
+        Ok(claims)
     }
 }
 
@@ -149,6 +201,16 @@ async fn fetch_jwks(client: &reqwest::Client, jwks_uri: &str) -> Result<Decoding
         .find(|k| k.kty == "RSA" && k.usage.as_deref().unwrap_or("sig") == "sig")
         .ok_or_else(|| format!("no RSA signing key in the JWKS at '{jwks_uri}'"))?;
     key_from_jwk(jwk)
+}
+
+// A hung or very slow identity provider must not block startup or the
+// periodic JWKS refresh forever.
+fn http_client() -> Result<reqwest::Client, String> {
+    reqwest::Client::builder()
+        .connect_timeout(Duration::from_secs(5))
+        .timeout(Duration::from_secs(10))
+        .build()
+        .map_err(|e| format!("failed to build http client: {e}"))
 }
 
 async fn fetch_json<T: serde::de::DeserializeOwned>(client: &reqwest::Client, url: &str) -> Result<T, String> {

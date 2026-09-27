@@ -21,8 +21,10 @@ references. Bitwarden's own key-connector code was not used for this.
 | POST   | `/user-keys` | Bearer token | `{ "key": "<b64>" }`, `200`     |
 
 The bearer token is the Vaultwarden access token. It is verified with RS256 against
-Vaultwarden's RSA public key, the issuer and `exp`/`nbf` must be valid. The user is
-identified by the `sub` claim, so a token can only ever read or write its own key.
+Vaultwarden's RSA public key, the issuer and `exp`/`nbf` must be valid, and it must
+carry the `api` scope. The user is identified by the `sub` claim, so a token can
+only ever read or write its own key. `POST` accepts only the base64 encoding of a
+32 byte master key; anything else is rejected with `400`.
 
 ## Configuration
 
@@ -39,6 +41,12 @@ Everything is set via environment variables, see [`.env.example`](.env.example):
 - `KC_ENCRYPTION_KEY_PATH` or `KC_ENCRYPTION_KEY` (required), a base64 encoded
   32 byte key used to encrypt the stored keys at rest; generate one with
   `openssl rand -base64 32`
+- `KC_CORS_ALLOWED_ORIGINS`, comma separated browser origins allowed to call the
+  connector (your web vault origin). CORS is opt in: when unset, no browser origin
+  is accepted.
+- `KC_API_PREFIX`, optional path prefix when the connector is served from a
+  subpath, e.g. `/kc` mounts `/kc/alive` and `/kc/user-keys`. `API_PREFIX` is
+  accepted as an alias.
 
 With a static key, export the public half of the RSA keypair Vaultwarden generates
 on first start (`data/rsa_key.pem` by default):
@@ -83,6 +91,8 @@ Or with Docker: `docker build -t key-connector .`
 
 Run this behind a reverse proxy with TLS, the clients require an https connector URL
 anyway and the access token and key would otherwise go over the wire in plain text.
+Terminate rate limiting at the proxy too; the connector does not throttle requests.
+`GET /user-keys` responses are sent with `Cache-Control: no-store`.
 
 The stored keys are encrypted at rest with AES-256-GCM under `KC_ENCRYPTION_KEY`,
 each entry bound to its user id, so a leaked database or backup is useless on its
